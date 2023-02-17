@@ -7,7 +7,7 @@ from bot_dydx import BotdYdX
 if __name__ == "__main__":
 
     bot_dydx = BotdYdX('CRV-USD')
-    bot_dydx.run_web_socket()
+    bot_dydx.cycle_of_bot_life()
 
     # list_of_bots = []
     #

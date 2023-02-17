@@ -4,6 +4,7 @@ import time
 from decimal import Decimal
 import json
 from dydx3 import Client
+import pandas as pd
 
 # constants
 from dydx3.constants import ORDER_SIDE_SELL
@@ -16,21 +17,24 @@ class BotdYdX:
 
     def __init__(self, security_name):
 
+        # Connect to the dYdX REST API
+        
 
+        self.public_client = Client(host='https://api.dydx.exchange')
         self.security_name = security_name
 
-        self.dicts = {'asks': {}, 'bids': {}}
-        self.offsets = {}
+        self.asks = pd.DataFrame()
+        self.bids = pd.DataFrame()
 
         self.start_time = time.perf_counter()  # for update bot every set time
-        self.order_expiration_time = 65
-        self.time_between_updates = 60
+        self.order_expiration_time = 120
+        self.time_between_updates = 110
 
         account_response = self.private_client.private.get_account()
         self.position_id = account_response.data['account']['positionId']
 
         self.size = 10  # check for the market
-        self.pct_spread = 0.21  # put it in the config file
+        self.pct_spread = 0.4  # put it in the config file
         self.rounding_decimal = 4  # check for the market
 
         self.bid_order_id = 0  # buy?
@@ -38,31 +42,20 @@ class BotdYdX:
         self.position_balance_id = 0
         self.long_position = True
 
-    def run_web_socket(self):
+    def cycle_of_bot_life(self):
 
-        def on_open(web_socket):
+        self.start_time = time.perf_counter()  # for update bot every set time
 
-            self.dicts = {'asks': {}, 'bids': {}}
-            self.offsets = {}
+        self.update_order_book()
 
-            print(f'on open websocket {web_socket}')
-            channel_data = {'type': 'subscribe',
-                            'channel': 'v3_orderbook',
-                            'id': str(self.security_name),
-                            'includeOffsets': 'True'}
-            web_socket.send(json.dumps(channel_data))
-
-        def on_message(web_socket, message):
-
-            # print(f'on message: {web_socket} message: {message}')
-            self.parse_message(message)
+        while True:
 
             end_time = time.perf_counter()
             elapsed_time = end_time - self.start_time
 
             if elapsed_time > self.time_between_updates:
-                # print(f'elapsed time {elapsed_time} do something with new dates')
-                self.start_time = time.perf_counter()
+
+                self.update_order_book()
 
                 self.cancel_buy_order()
                 self.create_buy_order()
@@ -74,71 +67,25 @@ class BotdYdX:
                 self.clear_long_position()
                 self.clear_short_position()
 
-                on_close(web_socket)
-                on_open(web_socket)
+                self.start_time = time.perf_counter()
 
-        def on_close(web_socket):
-            print(f'on close websocket {web_socket}')
-            print('closed')
+    def update_order_book(self):
 
-        socket = 'wss://api.dydx.exchange/v3/ws'
-        ws = websocket.WebSocketApp(socket, on_open=on_open, on_message=on_message, on_close=on_close)
-        ws.run_forever()
+        orderbook = self.public_client.public.get_orderbook(
+            market=self.security_name)
 
-    def parse_message(self, msg):
+        print(orderbook.data)
 
-        msg = json.loads(msg)  # msg is a string I need a dictionary
+        self.asks = pd.DataFrame(orderbook.data['asks'])
+        self.asks = self.asks.astype(float)
+        self.asks = self.asks.sort_values(by='price', ascending=True)
 
-        if msg["type"] == "subscribed":
+        self.bids = pd.DataFrame(orderbook.data['bids'])
+        self.bids = self.bids.astype(float)
+        self.bids = self.bids.sort_values(by='price', ascending=False)
 
-            # parse init order book
-
-            self.dicts = {'asks': {}, 'bids': {}}
-            self.offsets = {}
-
-            for side, data in msg['contents'].items():
-                for entry in data:
-
-                    size = Decimal(entry['size'])
-
-                    if size > 0:
-                        price = Decimal(entry['price'])
-                        self.dicts[str(side)][price] = size
-
-                        offset = Decimal(entry['offset'])
-                        self.offsets[price] = offset
-
-        if msg["type"] == "channel_data":
-
-            # parse updates order book
-
-            offset = 0
-
-            for side, data in msg['contents'].items():
-
-                if side == 'offset':
-                    offset = int(data)
-                    continue
-
-                else:
-
-                    for entry in data:
-                        price = Decimal(entry[0])
-                        amount = Decimal(entry[1])
-
-                        if price in self.offsets and offset <= self.offsets[price]:
-                            continue
-
-                        self.offsets[price] = offset
-
-                        if amount == 0:
-                            if price in self.dicts[side]:
-                                del self.dicts[side][price]
-                            else:
-                                try:
-                                    self.dicts[side].append((price, amount))
-                                except AttributeError:
-                                    self.dicts[side][price] = amount
+        Colors.print_red(f'{self.asks.head()}')
+        Colors.print_green(f'{self.bids.head()}')
 
     def cancel_buy_order(self):
 
@@ -157,8 +104,7 @@ class BotdYdX:
 
     def create_buy_order(self):
 
-        best_bid = max(self.dicts['bids'].keys())
-        best_bid = float(best_bid)
+        best_bid = self.bids.price.max()
 
         best_bid_order_price = best_bid - (best_bid * self.pct_spread/100)
 
@@ -199,8 +145,7 @@ class BotdYdX:
 
     def create_sell_order(self):
 
-        best_ask = min(self.dicts['asks'].keys())
-        best_ask = float(best_ask)
+        best_ask = self.asks.price.min()
 
         best_ask_order_price = best_ask + (best_ask * self.pct_spread/100)
 
@@ -228,7 +173,7 @@ class BotdYdX:
             status=POSITION_STATUS_OPEN,
         )
 
-        if len(all_position.data['positions'][0]) == 0:
+        if len(all_position.data['positions']) == 0:
             return
 
         position_side = all_position.data['positions'][0]['side']
@@ -242,8 +187,8 @@ class BotdYdX:
 
             position_price = float(all_position.data['positions'][0]['entryPrice'])
 
-            best_ask = min(self.dicts['asks'].keys())
-            best_ask = float(best_ask)
+            best_ask = self.asks.price.min()
+
             Colors.print_red(f'Best ask price in clear long position: {best_ask}')
 
             position_entry_clear = max(position_price * (1 + self.pct_spread/1000), best_ask)
@@ -275,7 +220,7 @@ class BotdYdX:
             status=POSITION_STATUS_OPEN,
         )
 
-        if len(all_position.data['positions'][0]) == 0:
+        if len(all_position.data['positions']) == 0:
             return
 
         position_side = all_position.data['positions'][0]['side']
@@ -289,8 +234,8 @@ class BotdYdX:
 
             position_price = float(all_position.data['positions'][0]['entryPrice'])
 
-            best_bid = max(self.dicts['bids'].keys())
-            best_bid = float(best_bid)
+            best_bid = self.bids.price.max()
+
             position_entry_clear = min(position_price * (1 - self.pct_spread/1000), best_bid)
 
             Colors.print_green(f'My best buy (bid) price {position_entry_clear:.1f} '
