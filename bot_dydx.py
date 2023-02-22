@@ -1,8 +1,6 @@
+from config_client_reader import ConfigClientReader
 from colors import Colors
-import websocket
 import time
-from decimal import Decimal
-import json
 from dydx3 import Client
 import pandas as pd
 
@@ -15,27 +13,35 @@ from dydx3.constants import POSITION_STATUS_OPEN
 
 class BotdYdX:
 
-    def __init__(self, security_name):
+    def __init__(self, security_name, minimum_order_size, tick_size, pct_spread):
+
+        self.security_name = security_name
+        self.size = minimum_order_size  # check for the market minimum order size
+        self.rounding_decimal = tick_size  # check for the market
+        self.pct_spread = pct_spread  # half of average hour candle
 
         # Connect to the dYdX REST API
-        
+        config_client_reader = ConfigClientReader('config_client.yaml')
+        self.private_client = Client(
+            host=config_client_reader.get_host(),
+            api_key_credentials={'key': config_client_reader.get_api_key(),
+                                 'secret': config_client_reader.get_api_secret(),
+                                 'passphrase': config_client_reader.get_api_passphrase()},
+            stark_private_key=config_client_reader.get_stark_private_key(),
+            default_ethereum_address=config_client_reader.get_default_ethereum_address(),
+        )
 
-        self.public_client = Client(host='https://api.dydx.exchange')
-        self.security_name = security_name
+        self.public_client = Client(host=config_client_reader.get_host())
 
         self.asks = pd.DataFrame()
         self.bids = pd.DataFrame()
 
         self.start_time = time.perf_counter()  # for update bot every set time
-        self.order_expiration_time = 120
-        self.time_between_updates = 110
+        self.order_expiration_time = 60*60
+        self.time_between_updates = 60*60 - 10
 
         account_response = self.private_client.private.get_account()
         self.position_id = account_response.data['account']['positionId']
-
-        self.size = 10  # check for the market
-        self.pct_spread = 0.4  # put it in the config file
-        self.rounding_decimal = 4  # check for the market
 
         self.bid_order_id = 0  # buy?
         self.ask_order_id = 0  # sell?
@@ -47,6 +53,8 @@ class BotdYdX:
         self.start_time = time.perf_counter()  # for update bot every set time
 
         self.update_order_book()
+        self.create_buy_order()
+        self.create_sell_order()
 
         while True:
 
