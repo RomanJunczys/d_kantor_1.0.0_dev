@@ -10,11 +10,11 @@ from bot_dydx import BotdYdX
 
 
 markets_list = [
-    ['FIL-USD', 1.0, 2, 1.54],
-    ['ICP-USD', 1.0, 2, 0.97],
-    ['COMP-USD', 0.1, 1, 0.97],
-    ['SOL-USD', 1.0, 3, 0.92],
-    ['1INCH-USD', 10, 3, 1.9],
+    ['FIL-USD', 1.0, 2, 1],
+    ['ICP-USD', 1.0, 2, 1],
+    ['COMP-USD', 0.1, 1, 1],
+    ['SOL-USD', 1.0, 3, 1],
+    ['1INCH-USD', 10, 3, 1],
 ]
 
 if __name__ == "__main__":

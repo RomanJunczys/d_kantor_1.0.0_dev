@@ -1,4 +1,5 @@
 from config_client_reader import ConfigClientReader
+from market_parameters import MarketParameters
 from colors import Colors
 import time
 from dydx3 import Client
@@ -22,8 +23,11 @@ class BotdYdX:
 
         # Connect to the dYdX REST API
         config_client_reader = ConfigClientReader('config_client.yaml')
+
+        self.host = config_client_reader.get_host()
+
         self.private_client = Client(
-            host=config_client_reader.get_host(),
+            host=self.host,
             api_key_credentials={'key': config_client_reader.get_api_key(),
                                  'secret': config_client_reader.get_api_secret(),
                                  'passphrase': config_client_reader.get_api_passphrase()},
@@ -53,8 +57,11 @@ class BotdYdX:
         self.start_time = time.perf_counter()  # for update bot every set time
 
         self.update_order_book()
+        self.update_market_parameters()
         self.create_buy_order()
         self.create_sell_order()
+        self.clear_long_position()
+        self.clear_short_position()
 
         while True:
 
@@ -64,6 +71,7 @@ class BotdYdX:
             if elapsed_time > self.time_between_updates:
 
                 self.update_order_book()
+                self.update_market_parameters()
 
                 self.cancel_buy_order()
                 self.create_buy_order()
@@ -94,6 +102,13 @@ class BotdYdX:
 
         Colors.print_red(f'{self.asks.head()}')
         Colors.print_green(f'{self.bids.head()}')
+
+    def update_market_parameters(self):
+        resolution = '1HOUR'
+        limit = 24
+        market_parameters = MarketParameters(self.host, self.security_name, resolution, limit )
+        mean, std = market_parameters.get_mean_std()
+        self.pct_spread = mean / 2.0
 
     def cancel_buy_order(self):
 
