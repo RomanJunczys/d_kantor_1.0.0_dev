@@ -1,3 +1,4 @@
+import sys
 from config_client_reader import ConfigClientReader
 from market_parameters import MarketParameters
 from colors import Colors
@@ -10,16 +11,18 @@ from dydx3.constants import ORDER_SIDE_SELL
 from dydx3.constants import ORDER_SIDE_BUY
 from dydx3.constants import ORDER_TYPE_LIMIT
 from dydx3.constants import POSITION_STATUS_OPEN
+from dydx3.constants import ORDER_TYPE_TRAILING_STOP
 
 
 class BotdYdX:
 
-    def __init__(self, security_name, minimum_order_size, tick_size, pct_spread):
+    def __init__(self, security_name, minimum_order_size, tick_size, pct_spread, stop_bot):
 
         self.security_name = security_name
         self.size = minimum_order_size  # check for the market minimum order size
         self.rounding_decimal = tick_size  # check for the market
         self.pct_spread = pct_spread  # half of average hour candle
+        self.stop_bot = stop_bot
 
         # Connect to the dYdX REST API
         config_client_reader = ConfigClientReader('config_client.yaml')
@@ -35,14 +38,16 @@ class BotdYdX:
             default_ethereum_address=config_client_reader.get_default_ethereum_address(),
         )
 
+        self.private_client.private.cancel_all_orders(self.security_name)
+
         self.public_client = Client(host=config_client_reader.get_host())
 
         self.asks = pd.DataFrame()
         self.bids = pd.DataFrame()
 
         self.start_time = time.perf_counter()  # for update bot every set time
-        self.order_expiration_time = 60*60
-        self.time_between_updates = 60*60 - 10
+        self.order_expiration_time = 60*60 - 10
+        self.time_between_updates = 60*60 - 30
 
         account_response = self.private_client.private.get_account()
         self.position_id = account_response.data['account']['positionId']
@@ -50,7 +55,8 @@ class BotdYdX:
         self.bid_order_id = 0  # buy?
         self.ask_order_id = 0  # sell?
         self.position_balance_id = 0
-        self.long_position = True
+        self.long_position = False
+        self.short_position = False
 
     def cycle_of_bot_life(self):
 
@@ -58,10 +64,21 @@ class BotdYdX:
 
         self.update_order_book()
         self.update_market_parameters()
-        self.create_buy_order()
-        self.create_sell_order()
+
         self.clear_long_position()
         self.clear_short_position()
+
+        print(f'Long position {self.long_position}')
+        print(f'Short position {self.short_position}')
+        print(f'Logic {self.long_position or self.short_position}')
+
+        if not (self.long_position or self.short_position):
+            if self.stop_bot:
+                self.stop_bot_message()
+                return
+
+        self.create_buy_order()
+        self.create_sell_order()
 
         while True:
 
@@ -73,15 +90,24 @@ class BotdYdX:
                 self.update_order_book()
                 self.update_market_parameters()
 
+                self.cancel_position_clear_balance_order()
+                self.clear_long_position()
+                self.clear_short_position()
+
+                print(f'Long position {self.long_position}')
+                print(f'Short position {self.short_position}')
+                print(f'Logic {self.long_position or self.short_position}')
+
+                if not(self.long_position or self.short_position):
+                    if self.stop_bot:
+                        self.stop_bot_message()
+                        return
+
                 self.cancel_buy_order()
                 self.create_buy_order()
 
                 self.cancel_sell_order()
                 self.create_sell_order()
-
-                self.cancel_position_clear_balance_order()
-                self.clear_long_position()
-                self.clear_short_position()
 
                 self.start_time = time.perf_counter()
 
@@ -108,7 +134,7 @@ class BotdYdX:
         limit = 24
         market_parameters = MarketParameters(self.host, self.security_name, resolution, limit )
         mean, std = market_parameters.get_mean_std()
-        self.pct_spread = mean / 2.0
+        self.pct_spread = mean / 2.1
 
     def cancel_buy_order(self):
 
@@ -133,9 +159,14 @@ class BotdYdX:
 
         Colors.print_green(f'My best (buy) bid price: {best_bid_order_price:.3f} in order book best bid: {best_bid}')
 
-        order_params = {'position_id': self.position_id, 'market': self.security_name, 'side': ORDER_SIDE_BUY,
-                        'order_type': ORDER_TYPE_LIMIT, 'post_only': True, 'size': str(self.size),
-                        'price': str(round(best_bid_order_price, self.rounding_decimal)), 'limit_fee': '0.0015',
+        order_params = {'position_id': self.position_id,
+                        'market': self.security_name,
+                        'side': ORDER_SIDE_BUY,
+                        'order_type': ORDER_TYPE_LIMIT,
+                        'post_only': True,
+                        'size': str(self.size),
+                        'price': str(round(best_bid_order_price, self.rounding_decimal)),
+                        'limit_fee': '0.0015',
                         'expiration_epoch_seconds': time.time() + self.order_expiration_time}
 
         try:
@@ -174,9 +205,13 @@ class BotdYdX:
 
         Colors.print_red(f'My ask (sell) price: {best_ask_order_price:.3f} in order book best ask: {best_ask}')
 
-        order_params = {'position_id': self.position_id, 'market': self.security_name, 'side': ORDER_SIDE_SELL,
-                        'order_type': ORDER_TYPE_LIMIT, 'post_only': True, 'size': str(self.size),
-                        'price': str(round(best_ask_order_price, self.rounding_decimal)), 'limit_fee': '0.0015',
+        order_params = {'position_id': self.position_id,
+                        'market': self.security_name,
+                        'side': ORDER_SIDE_SELL,
+                        'order_type': ORDER_TYPE_LIMIT,
+                        'post_only': True, 'size': str(self.size),
+                        'price': str(round(best_ask_order_price, self.rounding_decimal)),
+                        'limit_fee': '0.0015',
                         'expiration_epoch_seconds': time.time() + self.order_expiration_time}
         try:
             response_ask_order_dict = self.private_client.private.create_order(**order_params)
@@ -197,7 +232,7 @@ class BotdYdX:
         )
 
         if len(all_position.data['positions']) == 0:
-            return
+            return False
 
         position_side = all_position.data['positions'][0]['side']
         position_size = abs(float(all_position.data['positions'][0]['size']))
@@ -214,7 +249,7 @@ class BotdYdX:
 
             Colors.print_red(f'Best ask price in clear long position: {best_ask}')
 
-            position_entry_clear = max(position_price * (1 + self.pct_spread/1000), best_ask)
+            position_entry_clear = max(position_price * (1 + self.pct_spread / 1000), best_ask)
 
             order_params = {
                 'position_id': self.position_id,
@@ -236,6 +271,8 @@ class BotdYdX:
             except Exception as ex:
                 Colors.print_purple(f'Clear long position - sell Exception {ex}')
 
+        return True
+
     def clear_short_position(self):
 
         all_position = self.private_client.private.get_positions(
@@ -244,14 +281,14 @@ class BotdYdX:
         )
 
         if len(all_position.data['positions']) == 0:
-            return
+            return False
 
         position_side = all_position.data['positions'][0]['side']
         position_size = abs(float(all_position.data['positions'][0]['size']))
 
         if position_side == 'SHORT' and position_size != 0:
 
-            self.long_position = False
+            self.short_position = True
 
             Colors.print_green(f'SHORT position {all_position.data}')
 
@@ -284,6 +321,8 @@ class BotdYdX:
             except Exception as ex:
                 Colors.print_purple(f'Clear short position - buy - Exception {ex}')
 
+        return True
+
     def cancel_position_clear_balance_order(self):
 
         if self.position_balance_id == 0:
@@ -292,14 +331,33 @@ class BotdYdX:
         try:
             if self.long_position:
                 Colors.print_red(f'Cancel position clear balance order: {self.position_balance_id}')
-            else:
+
+            if self.short_position:
                 Colors.print_green(f'Cancel position clear balance order: {self.position_balance_id}')
+
             self.private_client.private.cancel_order(order_id=str(self.position_balance_id))
+
         except Exception as ex:
             self.position_balance_id = 0
             Colors.print_purple(f'Cancel position clear balance order Exception {ex}')
 
         if self.long_position:
             Colors.print_red(f'Cancel position clear balance order')
-        else:
+
+        if self.short_position:
             Colors.print_green(f'Cancel position clear balance order')
+
+    def stop_bot_message(self):
+        print(f'\n'
+                 f'{Colors.FAIL}{Colors.BOLD}'
+                 f'               ##########         \n'
+                 f'          ####################    \n'
+                 f'     ##############################\n'
+                 f'########################################\n'
+                 f'   {self.security_name} The bot has been stopped        \n'
+                 f'########################################\n'
+                 f'     ##############################\n'
+                 f'          ####################    \n'
+                 f'               ##########         \n'
+                 f'{Colors.ENDC}'
+                 f'\n')
