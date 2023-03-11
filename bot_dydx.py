@@ -11,7 +11,7 @@ from dydx3.constants import ORDER_SIDE_SELL
 from dydx3.constants import ORDER_SIDE_BUY
 from dydx3.constants import ORDER_TYPE_LIMIT
 from dydx3.constants import POSITION_STATUS_OPEN
-from dydx3.constants import ORDER_TYPE_TRAILING_STOP
+from dydx3.constants import ORDER_TYPE_STOP
 
 
 class BotdYdX:
@@ -45,9 +45,9 @@ class BotdYdX:
         self.asks = pd.DataFrame()
         self.bids = pd.DataFrame()
 
-        self.start_time = time.perf_counter()  # for update bot every set time
-        self.order_expiration_time = 60*60 - 10
-        self.time_between_updates = 60*60 - 30
+        self.order_expiration_time = 60 * 60 - 10
+        self.time_between_updates = 60 * 60 - 30
+        self.time_between_defence = 60 * 10
 
         account_response = self.private_client.private.get_account()
         self.position_id = account_response.data['account']['positionId']
@@ -60,7 +60,8 @@ class BotdYdX:
 
     def cycle_of_bot_life(self):
 
-        self.start_time = time.perf_counter()  # for update bot every set time
+        start_update_time = time.perf_counter()  # for update bot every set time
+        start_defence_time = time.perf_counter()  # for defence orders
 
         self.update_order_book()
         self.update_market_parameters()
@@ -82,13 +83,28 @@ class BotdYdX:
 
         while True:
 
-            end_time = time.perf_counter()
-            elapsed_time = end_time - self.start_time
+            # update
+            end_update_time = time.perf_counter()
+            elapsed_update_time = end_update_time - start_update_time
 
-            if elapsed_time > self.time_between_updates:
+            if elapsed_update_time > self.time_between_updates:
 
                 self.update_order_book()
                 self.update_market_parameters()
+
+                self.cancel_buy_order()
+                self.create_buy_order()
+
+                self.cancel_sell_order()
+                self.create_sell_order()
+
+                start_update_time = time.perf_counter()
+
+            # defence
+            end_defence_time = time.perf_counter()
+            elapsed_defence_time = end_defence_time - start_defence_time
+
+            if elapsed_defence_time > self.time_between_defence:
 
                 self.cancel_position_clear_balance_order()
                 self.clear_long_position()
@@ -98,18 +114,12 @@ class BotdYdX:
                 print(f'Short position {self.short_position}')
                 print(f'Logic {self.long_position or self.short_position}')
 
-                if not(self.long_position or self.short_position):
+                start_defence_time = time.perf_counter()
+
+                if not (self.long_position or self.short_position):
                     if self.stop_bot:
                         self.stop_bot_message()
                         return
-
-                self.cancel_buy_order()
-                self.create_buy_order()
-
-                self.cancel_sell_order()
-                self.create_sell_order()
-
-                self.start_time = time.perf_counter()
 
     def update_order_book(self):
 
@@ -245,11 +255,9 @@ class BotdYdX:
 
             position_price = float(all_position.data['positions'][0]['entryPrice'])
 
-            best_ask = self.asks.price.min()
+            price = round(position_price * (1 + self.pct_spread / 100), self.rounding_decimal)
 
-            Colors.print_red(f'Best ask price in clear long position: {best_ask}')
-
-            position_entry_clear = max(position_price * (1 + self.pct_spread / 1000), best_ask)
+            Colors.print_red(f'New price: {price:.2f}')
 
             order_params = {
                 'position_id': self.position_id,
@@ -258,7 +266,57 @@ class BotdYdX:
                 'order_type': ORDER_TYPE_LIMIT,
                 'post_only': True,
                 'size': str(position_size),
-                'price': str(round(position_entry_clear, self.rounding_decimal)),
+                'price': str(price),
+                'limit_fee': '0.0015',
+                'expiration_epoch_seconds': time.time() + self.order_expiration_time,
+            }
+
+            try:
+                position_clear_sell_order_response = self.private_client.private.create_order(**order_params)
+                self.position_balance_id = position_clear_sell_order_response.data['order']['id']
+                Colors.print_red(
+                    f"Clearance sell submitted at {position_clear_sell_order_response.data['order']['price']}")
+            except Exception as ex:
+                Colors.print_purple(f'Clear long position - sell Exception {ex}')
+
+        return True
+
+    def clear_long_position_stop(self):
+
+        all_position = self.private_client.private.get_positions(
+            market=self.security_name,
+            status=POSITION_STATUS_OPEN,
+        )
+
+        if len(all_position.data['positions']) == 0:
+            return False
+
+        position_side = all_position.data['positions'][0]['side']
+        position_size = abs(float(all_position.data['positions'][0]['size']))
+
+        if position_side == 'LONG' and position_size != 0:
+
+            self.long_position = True
+
+            Colors.print_red(f'LONG position {all_position.data}')
+
+            position_price = float(all_position.data['positions'][0]['entryPrice'])
+
+            triggered_price = round(position_price * (1 - 1.0 * self.pct_spread/100), self.rounding_decimal)
+            price = round(position_price * (1 - 2.0 * self.pct_spread / 100), self.rounding_decimal)
+
+            Colors.print_red(f'Triggered price: {triggered_price:.2f} '
+                               f'price: {price:.2f}')
+
+            order_params = {
+                'position_id': self.position_id,
+                'market': self.security_name,
+                'side': ORDER_SIDE_SELL,
+                'order_type': ORDER_TYPE_STOP,
+                'post_only': False,
+                'size': str(position_size),
+                'price': str(price),
+                'trigger_price': str(triggered_price),
                 'limit_fee': '0.0015',
                 'expiration_epoch_seconds': time.time() + self.order_expiration_time,
             }
@@ -294,13 +352,9 @@ class BotdYdX:
 
             position_price = float(all_position.data['positions'][0]['entryPrice'])
 
-            best_bid = self.bids.price.max()
+            price = round(position_price * (1 - self.pct_spread / 100), self.rounding_decimal)
 
-            position_entry_clear = min(position_price * (1 - self.pct_spread/1000), best_bid)
-
-            Colors.print_green(f'My best buy (bid) price {position_entry_clear:.1f} '
-                               f'best buy (bid) in order book: {best_bid}')
-
+            Colors.print_green(f'New price: {price:.2f}')
             order_params = {
                 'position_id': self.position_id,
                 'market': self.security_name,
@@ -308,7 +362,56 @@ class BotdYdX:
                 'order_type': ORDER_TYPE_LIMIT,
                 'post_only': True,
                 'size': str(position_size),
-                'price': str(round(position_entry_clear, self.rounding_decimal)),
+                'price': str(price),
+                'limit_fee': '0.0015',
+                'expiration_epoch_seconds': time.time() + self.order_expiration_time,
+            }
+
+            try:
+                position_clear_sell_order_response = self.private_client.private.create_order(**order_params)
+                self.position_balance_id = position_clear_sell_order_response.data['order']['id']
+                Colors.print_green(
+                    f"Clearance sell submitted at {position_clear_sell_order_response.data['order']['price']}")
+            except Exception as ex:
+                Colors.print_purple(f'Clear short position - buy - Exception {ex}')
+
+        return True
+
+    def clear_short_position_stop(self):
+
+        all_position = self.private_client.private.get_positions(
+            market=self.security_name,
+            status=POSITION_STATUS_OPEN,
+        )
+
+        if len(all_position.data['positions']) == 0:
+            return False
+
+        position_side = all_position.data['positions'][0]['side']
+        position_size = abs(float(all_position.data['positions'][0]['size']))
+
+        if position_side == 'SHORT' and position_size != 0:
+
+            self.short_position = True
+
+            Colors.print_green(f'SHORT position {all_position.data}')
+
+            position_price = float(all_position.data['positions'][0]['entryPrice'])
+
+            triggered_price = round(position_price * (1 + 1.0 * self.pct_spread / 100), self.rounding_decimal)
+            price = round(position_price * (1 + 2.0 * self.pct_spread / 100), self.rounding_decimal)
+
+            Colors.print_green(f'Triggered price: {triggered_price:.2f} '
+                               f'price: {price:.2f}')
+            order_params = {
+                'position_id': self.position_id,
+                'market': self.security_name,
+                'side': ORDER_SIDE_BUY,
+                'order_type': ORDER_TYPE_STOP,
+                'post_only': False,
+                'size': str(position_size),
+                'price': str(price),
+                'trigger_price': str(triggered_price),
                 'limit_fee': '0.0015',
                 'expiration_epoch_seconds': time.time() + self.order_expiration_time,
             }

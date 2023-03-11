@@ -10,16 +10,11 @@ from bot_dydx import BotdYdX
 
 
 markets_list = [
-    ['SNX-USD', 1.0, 2, 0.7, False],
-    ['YFI-USD', 0.001, 0, 0.58, False],
-    ['MKR-USD', 0.01, 0, 0.57, False],
-    ['CRV-USD', 10.0, 4, 0.52, False],
-    ['ICP-USD', 1.0, 2, 0.44, False],
-    ['SUSHI-USD', 1.0, 3, 0.43, False],
-    ['ENJ-USD', 10.0, 3, 0.42, False],
-    ['NEAR-USD', 1.0, 2, 0.41, False],
-    ['AVAX-USD', 1.0, 2, 0.4, False],
-    ['SOL-USD', 1.0, 3, 0.4, False],
+    ['MKR-USD', 0.01, 0, 1.76, False],
+    ['SNX-USD', 1.0, 2, 1.44, False],
+    ['SOL-USD', 1.0, 3, 1.34, False],
+    ['YFI-USD', 0.001, 0, 1.24, False],
+    ['MATIC-USD', 10.0, 4, 1.17, False],
 ]
 
 if __name__ == "__main__":
